@@ -287,11 +287,11 @@
   <div class="card">
     <div id="speed-header">
       <div class="card-label" style="margin-bottom:0">速度</div>
-      <div><span id="speed-val">5.0</span><span id="speed-unit">m/s</span></div>
+      <div><span id="speed-val">5.0</span><span id="speed-unit">km/h</span></div>
     </div>
     <input type="range" id="speed-slider" min="0" max="100" step="1" value="43">
     <div id="speed-ticks">
-      <span>0.5</span><span>1</span><span>3</span><span>10</span><span>30</span><span>50</span>
+      <span>0.5</span><span>2</span><span>6</span><span>15</span><span>30</span><span>50</span>
     </div>
   </div>
 
@@ -345,6 +345,18 @@
 
   <div class="card">
     <div class="card-label">路線播放</div>
+    <!-- repeat / bounce settings -->
+    <div style="display:flex;align-items:center;gap:5px;margin-bottom:8px">
+      <button id="btn-bounce" class="btn btn-gray"
+              style="flex:1;padding:5px 6px;font-size:10px;line-height:1.3;border:1px solid rgba(255,255,255,.12)"
+              onclick="toggleBounce()">↔ 折返</button>
+      <div style="display:flex;align-items:center;gap:3px;flex-shrink:0">
+        <span style="font-size:10px;opacity:.4">×</span>
+        <input id="repeat-n" type="number" min="1" max="99" value="1"
+               style="width:36px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:12px;font-weight:600;text-align:center;padding:4px 0;outline:none">
+        <span style="font-size:10px;opacity:.4">次</span>
+      </div>
+    </div>
     <input type="file" id="gpx-input" accept=".gpx" style="display:none">
     <button class="btn btn-blue" id="btn-play" onclick="document.getElementById('gpx-input').click()">
       選擇 GPX 播放
@@ -416,38 +428,53 @@ map.on('click', e => {
   map.setView(e.latlng, map.getZoom());
 });
 
-// ── Speed (log-scale slider: 0–100 maps to 0.5–50 m/s) ───────────────────────
-const SPD_MIN = 0.5, SPD_MAX = 50;
-let currentSpeed = 5;
+// ── Speed (log-scale slider: 0–100 maps to 0.5–50 km/h) ──────────────────────
+const SPD_MIN = 0.5, SPD_MAX = 50;  // km/h
+let currentSpeed = 5 / 3.6;         // internal unit: m/s
 
-function sliderToSpeed(s) {
+function sliderToKmh(s) {
   return Math.exp(Math.log(SPD_MIN) + (s / 100) * (Math.log(SPD_MAX) - Math.log(SPD_MIN)));
 }
-function speedToSlider(spd) {
-  return Math.round((Math.log(spd) - Math.log(SPD_MIN)) / (Math.log(SPD_MAX) - Math.log(SPD_MIN)) * 100);
+function kmhToSlider(kmh) {
+  return Math.round((Math.log(kmh) - Math.log(SPD_MIN)) / (Math.log(SPD_MAX) - Math.log(SPD_MIN)) * 100);
 }
 
-const speedSlider  = document.getElementById('speed-slider');
-const speedValEl   = document.getElementById('speed-val');
+const speedSlider = document.getElementById('speed-slider');
+const speedValEl  = document.getElementById('speed-val');
 
 function applySpeed(sliderVal) {
-  const spd = sliderToSpeed(sliderVal);
-  currentSpeed = spd;
-  speedValEl.textContent = spd < 10 ? spd.toFixed(1) : Math.round(spd).toString();
-  // fill track blue up to thumb
+  const kmh = sliderToKmh(sliderVal);
+  currentSpeed = kmh / 3.6;   // m/s — used by joystick & keyboard
+  speedValEl.textContent = kmh < 10 ? kmh.toFixed(1) : Math.round(kmh).toString();
   const pct = sliderVal + '%';
   speedSlider.style.background =
     `linear-gradient(to right, #0A84FF ${pct}, rgba(255,255,255,.15) ${pct})`;
   fetch('/api/speed', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ speed: spd }),
+    body: JSON.stringify({ speed: currentSpeed }),   // m/s to backend
   });
 }
 
 speedSlider.addEventListener('input', e => applySpeed(parseInt(e.target.value)));
-// Initialise at 5 m/s
-applySpeed(speedToSlider(5));
+applySpeed(kmhToSlider(5));  // initialise at 5 km/h
+
+// ── Playback settings (repeat / bounce) ───────────────────────────────────────
+let playRepeat = 1;
+let playBounce = false;
+
+document.getElementById('repeat-n').addEventListener('change', e => {
+  playRepeat = Math.max(1, Math.min(99, parseInt(e.target.value) || 1));
+  e.target.value = playRepeat;
+});
+
+function toggleBounce() {
+  playBounce = !playBounce;
+  const btn = document.getElementById('btn-bounce');
+  btn.style.background   = playBounce ? 'rgba(10,132,255,.25)' : '';
+  btn.style.borderColor  = playBounce ? 'rgba(10,132,255,.5)'  : '';
+  btn.style.color        = playBounce ? '#4fa3ff'               : '';
+}
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 function apiSet(lat, lon) {
@@ -472,6 +499,8 @@ document.getElementById('gpx-input').addEventListener('change', async e => {
   if (!file) return;
   const fd = new FormData();
   fd.append('file', file);
+  fd.append('repeat', String(playRepeat));
+  fd.append('bounce', playBounce ? 'true' : 'false');
   const res = await fetch('/api/play', { method: 'POST', body: fd });
   const data = await res.json();
   if (!res.ok) {
@@ -650,11 +679,14 @@ function coordsToGpx(coords){
 async function playCoords(coords){
   if(coords.length<2) return;
   const blob = new Blob([coordsToGpx(coords)],{type:'application/gpx+xml'});
-  const fd = new FormData(); fd.append('file',blob,'route.gpx');
+  const fd = new FormData();
+  fd.append('file', blob, 'route.gpx');
+  fd.append('repeat', String(playRepeat));
+  fd.append('bounce', playBounce ? 'true' : 'false');
   const res = await fetch('/api/play',{method:'POST',body:fd});
   const data = await res.json();
   if(!res.ok) setStatus('err', data.detail||'播放失敗');
-  else setStatus('ok',`播放中 (${coords.length} 個點)`);
+  else setStatus('ok',`播放中 (${coords.length} 個點 × ${playRepeat}${playBounce?' 折返':''})`);
 }
 function downloadGpx(coords, filename){
   if(!coords.length) return;

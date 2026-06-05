@@ -8,7 +8,7 @@ from typing import Optional
 
 import gpxpy
 import uvicorn
-from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Form, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -140,21 +140,34 @@ def _interpolate(segs, meters: float) -> tuple[float, float]:
     return segs[-1][1]
 
 
-async def run_route(coords: list[tuple[float, float]]) -> None:
+async def run_route(
+    coords: list[tuple[float, float]],
+    repeat: int = 1,
+    bounce: bool = False,
+) -> None:
     state.playing = True
     state.progress = 0.0
-    segs = _build_segments(coords)
-    total = sum(s[2] for s in segs)
-    traveled = 0.0
+    repeat = max(1, repeat)
     interval = 0.3
+
+    # Pre-build both directions so we don't rebuild every iteration
+    segs_fwd = _build_segments(coords)
+    total_fwd = sum(s[2] for s in segs_fwd)
+    segs_bwd = _build_segments(list(reversed(coords)))
+    total_bwd = sum(s[2] for s in segs_bwd)
+
     try:
-        while traveled < total:
-            traveled = min(traveled + state.speed * interval, total)
-            state.progress = traveled / total if total > 0 else 1.0
-            coord = _interpolate(segs, traveled)
-            state.lat, state.lon = coord
-            schedule_set(coord[0], coord[1])
-            await asyncio.sleep(interval)
+        for i in range(repeat):
+            # Odd iterations go backward when bounce is on
+            segs, total = (segs_bwd, total_bwd) if (bounce and i % 2 == 1) else (segs_fwd, total_fwd)
+            traveled = 0.0
+            while traveled < total:
+                traveled = min(traveled + state.speed * interval, total)
+                state.progress = (i + (traveled / total if total > 0 else 1)) / repeat
+                coord = _interpolate(segs, traveled)
+                state.lat, state.lon = coord
+                schedule_set(coord[0], coord[1])
+                await asyncio.sleep(interval)
     except asyncio.CancelledError:
         pass
     finally:
@@ -211,7 +224,11 @@ async def api_speed(body: SpeedBody):
 
 
 @app.post("/api/play")
-async def api_play(file: UploadFile = File(...)):
+async def api_play(
+    file: UploadFile = File(...),
+    repeat: int = Form(1),
+    bounce: bool = Form(False),
+):
     global play_task
     content = await file.read()
     try:
@@ -237,7 +254,7 @@ async def api_play(file: UploadFile = File(...)):
         play_task.cancel()
         await asyncio.sleep(0.05)
 
-    play_task = asyncio.create_task(run_route(coords))
+    play_task = asyncio.create_task(run_route(coords, repeat=repeat, bounce=bounce))
     return {"ok": True, "points": len(coords)}
 
 
