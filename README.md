@@ -1,7 +1,7 @@
 # 修改手機 GPS - 使用方式
 
 ## 連接 USB
-* terminal 開啟網頁地圖：
+* terminal 開啟網頁地圖（假設資料夾存在 Desktop）：
 ```
 cd Desktop/iphone-gps && uv run main.py
 ```
