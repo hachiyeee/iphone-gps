@@ -244,6 +244,24 @@
   #joystick-knob.active {
     box-shadow: 0 3px 20px rgba(10,132,255,.8);
   }
+
+  /* ── Route planning card ── */
+  .route-mode-row { display: flex; gap: 5px; }
+  .btn-orange { background: rgba(255,149,0,.2); border: 1px solid rgba(255,149,0,.4); color: #FF9500; }
+  .btn-orange.active { background: #FF9500; border-color: #FF9500; color: #fff; }
+  .btn-green  { background: rgba(52,208,88,.2); border: 1px solid rgba(52,208,88,.4); color: #34d058; }
+  .btn-green.active  { background: #34d058; border-color: #34d058; color: #fff; }
+
+  /* blinking record dot */
+  .rec-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #FF3B30; flex-shrink: 0;
+    animation: blink 1s ease-in-out infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.15} }
+
+  .sub-row { display: flex; gap: 4px; margin-top: 5px; }
+  .sub-row .btn { padding: 7px; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -274,6 +292,54 @@
     <input type="range" id="speed-slider" min="0" max="100" step="1" value="43">
     <div id="speed-ticks">
       <span>0.5</span><span>1</span><span>3</span><span>10</span><span>30</span><span>50</span>
+    </div>
+  </div>
+
+  <!-- Route planning card -->
+  <div class="card" id="route-card">
+    <div class="card-label">路線規劃</div>
+
+    <!-- idle: two mode buttons -->
+    <div id="rs-idle" class="route-mode-row">
+      <button class="btn btn-orange" style="flex:1;padding:7px;font-size:11px" id="btn-plan-mode">✏️ 規劃</button>
+      <button class="btn btn-green"  style="flex:1;padding:7px;font-size:11px" id="btn-rec-mode">⏺ 錄製</button>
+    </div>
+
+    <!-- planning mode -->
+    <div id="rs-plan" style="display:none">
+      <div style="font-size:11px;color:#FF9500;margin-bottom:7px">
+        點地圖加入點 · <span id="plan-pt-count">0</span> 個點
+      </div>
+      <div class="sub-row">
+        <button class="btn btn-gray" style="flex:1" onclick="undoPlanPoint()" title="撤回最後一點">↩</button>
+        <button class="btn btn-blue" style="flex:2" onclick="playPlanRoute()" id="plan-play-btn" disabled>▶ 播放</button>
+        <button class="btn btn-gray" style="flex:1" onclick="downloadGpx(planCoords,'plan.gpx')" title="存成 GPX">↓</button>
+      </div>
+      <button class="btn btn-red" style="margin-top:5px;font-size:11px;padding:7px" onclick="exitPlanMode()">結束規劃</button>
+    </div>
+
+    <!-- recording mode -->
+    <div id="rs-rec" style="display:none">
+      <div style="display:flex;align-items:center;gap:7px;margin-bottom:8px">
+        <div class="rec-dot"></div>
+        <span style="font-size:12px">錄製中 · <span id="rec-pt-count">0</span> 個點</span>
+      </div>
+      <button class="btn btn-red" style="font-size:11px;padding:7px" onclick="stopRecordMode()">⏹ 停止錄製</button>
+    </div>
+
+    <!-- recorded: has data, ready to replay -->
+    <div id="rs-recorded" style="display:none">
+      <div style="font-size:11px;opacity:.55;margin-bottom:7px">
+        已錄製 <span id="recorded-pt-count">0</span> 個點
+      </div>
+      <div class="sub-row">
+        <button class="btn btn-blue"  style="flex:2" onclick="playRecordedRoute()">▶ 播放</button>
+        <button class="btn btn-gray"  style="flex:1" onclick="downloadGpx(recordCoords,'recorded.gpx')" title="存成 GPX">↓</button>
+      </div>
+      <div class="sub-row">
+        <button class="btn btn-green" style="flex:1" onclick="reRecord()">⏺ 重錄</button>
+        <button class="btn btn-gray"  style="flex:1" onclick="clearRecorded()">✕ 清除</button>
+      </div>
     </div>
   </div>
 
@@ -341,8 +407,9 @@ function setMarker(lat, lon) {
   }
 }
 
-// Click map to set location
+// Click map to set location (or add plan waypoint)
 map.on('click', e => {
+  if (routeState === 'planning') { addPlanPoint(e.latlng.lat, e.latlng.lng); return; }
   if (joystick.active) return;
   setMarker(e.latlng.lat, e.latlng.lng);
   apiSet(e.latlng.lat, e.latlng.lng);
@@ -558,6 +625,136 @@ setInterval(() => {
   document.getElementById('lat-val').textContent = newLat.toFixed(6) + '°';
   document.getElementById('lon-val').textContent = newLon.toFixed(6) + '°';
 }, 100);
+
+// ── Route planning & recording ────────────────────────────────────────────────
+let routeState = 'idle'; // idle | planning | recording | recorded
+
+// ── shared helpers ──
+function geoDist(lat1,lon1,lat2,lon2){
+  const dlat=(lat2-lat1)*111000, dlon=(lon2-lon1)*111000*Math.cos(lat1*Math.PI/180);
+  return Math.hypot(dlat,dlon);
+}
+function waypointIcon(n){
+  return L.divIcon({
+    className:'',
+    html:`<div style="width:22px;height:22px;border-radius:50%;background:#FF9500;border:2.5px solid #fff;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.45)">${n}</div>`,
+    iconSize:[22,22], iconAnchor:[11,11],
+  });
+}
+function coordsToGpx(coords){
+  const pts = coords.map(([lat,lon],i)=>
+    `  <wpt lat="${lat.toFixed(7)}" lon="${lon.toFixed(7)}"><name>P${i+1}</name></wpt>`
+  ).join('\n');
+  return `<?xml version="1.0"?>\n<gpx version="1.1" creator="iPhone GPS Control">\n${pts}\n</gpx>`;
+}
+async function playCoords(coords){
+  if(coords.length<2) return;
+  const blob = new Blob([coordsToGpx(coords)],{type:'application/gpx+xml'});
+  const fd = new FormData(); fd.append('file',blob,'route.gpx');
+  const res = await fetch('/api/play',{method:'POST',body:fd});
+  const data = await res.json();
+  if(!res.ok) setStatus('err', data.detail||'播放失敗');
+  else setStatus('ok',`播放中 (${coords.length} 個點)`);
+}
+function downloadGpx(coords, filename){
+  if(!coords.length) return;
+  const blob = new Blob([coordsToGpx(coords)],{type:'application/gpx+xml'});
+  const url = URL.createObjectURL(blob);
+  Object.assign(document.createElement('a'),{href:url,download:filename}).click();
+  URL.revokeObjectURL(url);
+}
+function setRouteState(s){
+  routeState = s;
+  document.getElementById('rs-idle').style.display     = s==='idle'     ?'block':'none';
+  document.getElementById('rs-plan').style.display     = s==='planning' ?'block':'none';
+  document.getElementById('rs-rec').style.display      = s==='recording'?'block':'none';
+  document.getElementById('rs-recorded').style.display = s==='recorded' ?'block':'none';
+  // tint the mode buttons when active
+  document.getElementById('btn-plan-mode').classList.toggle('active', s==='planning');
+  document.getElementById('btn-rec-mode').classList.toggle('active',  s==='recording'||s==='recorded');
+}
+
+// ── Plan mode ──
+let planCoords=[], planMarkers=[], planPolyline=null;
+
+document.getElementById('btn-plan-mode').onclick = ()=>enterPlanMode();
+function enterPlanMode(){
+  setRouteState('planning');
+  planCoords=[]; planMarkers.forEach(m=>map.removeLayer(m)); planMarkers=[];
+  if(planPolyline){map.removeLayer(planPolyline);planPolyline=null;}
+  updatePlanCount();
+}
+function exitPlanMode(){
+  setRouteState('idle');
+  planMarkers.forEach(m=>map.removeLayer(m)); planMarkers=[];
+  if(planPolyline){map.removeLayer(planPolyline);planPolyline=null;}
+  planCoords=[];
+}
+function addPlanPoint(lat,lon){
+  planCoords.push([lat,lon]);
+  const m = L.marker([lat,lon],{icon:waypointIcon(planCoords.length),draggable:true,zIndexOffset:1000}).addTo(map);
+  m.on('drag', e=>{
+    const i=planMarkers.indexOf(m);
+    if(i>=0){planCoords[i]=[e.latlng.lat,e.latlng.lng]; updatePlanLine();}
+  });
+  planMarkers.push(m);
+  updatePlanLine(); updatePlanCount();
+}
+function undoPlanPoint(){
+  if(!planCoords.length) return;
+  planCoords.pop();
+  const m=planMarkers.pop(); if(m) map.removeLayer(m);
+  updatePlanLine(); updatePlanCount();
+}
+function updatePlanLine(){
+  if(planPolyline) map.removeLayer(planPolyline);
+  planPolyline = planCoords.length>=2
+    ? L.polyline(planCoords,{color:'#FF9500',weight:2.5,dashArray:'8 5',opacity:.85}).addTo(map)
+    : null;
+}
+function updatePlanCount(){
+  document.getElementById('plan-pt-count').textContent = planCoords.length;
+  document.getElementById('plan-play-btn').disabled = planCoords.length<2;
+}
+async function playPlanRoute(){
+  if(planCoords.length<2) return;
+  await playCoords([...planCoords]);
+  exitPlanMode();
+}
+
+// ── Record mode ──
+let recordCoords=[], recordTimer=null, recordPolyline=null, lastRecordPos=null;
+
+document.getElementById('btn-rec-mode').onclick = ()=>enterRecordMode();
+function enterRecordMode(){
+  setRouteState('recording');
+  recordCoords=[]; lastRecordPos=null;
+  if(recordPolyline){map.removeLayer(recordPolyline);recordPolyline=null;}
+  document.getElementById('rec-pt-count').textContent='0';
+  recordTimer = setInterval(()=>{
+    if(!marker) return;
+    const {lat,lng} = marker.getLatLng();
+    if(lastRecordPos && geoDist(lastRecordPos[0],lastRecordPos[1],lat,lng)<3) return;
+    recordCoords.push([lat,lng]); lastRecordPos=[lat,lng];
+    // update green trail
+    if(recordPolyline) map.removeLayer(recordPolyline);
+    if(recordCoords.length>=2)
+      recordPolyline=L.polyline(recordCoords,{color:'#34d058',weight:2,opacity:.7}).addTo(map);
+    document.getElementById('rec-pt-count').textContent=recordCoords.length;
+  },1000);
+}
+function stopRecordMode(){
+  clearInterval(recordTimer); recordTimer=null;
+  if(recordCoords.length<2){ setRouteState('idle'); return; }
+  setRouteState('recorded');
+  document.getElementById('recorded-pt-count').textContent=recordCoords.length;
+}
+async function playRecordedRoute(){ await playCoords([...recordCoords]); }
+function reRecord(){ if(recordPolyline){map.removeLayer(recordPolyline);recordPolyline=null;} enterRecordMode(); }
+function clearRecorded(){
+  if(recordPolyline){map.removeLayer(recordPolyline);recordPolyline=null;}
+  recordCoords=[]; setRouteState('idle');
+}
 
 // ── Keyboard (arrow keys) ──────────────────────────────────────────────────────
 const keysDown = new Set();
