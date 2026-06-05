@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iPhone GPS Control</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    background: #000;
+    color: #f0f0f0;
+    overflow: hidden;
+    height: 100dvh;
+  }
+
+  #map {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+  }
+
+  /* ── HUD top-left ── */
+  #hud {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    z-index: 500;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+  }
+
+  .pill {
+    background: rgba(0,0,0,.65);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,.1);
+    border-radius: 12px;
+    padding: 8px 14px;
+    font-size: 12px;
+    line-height: 1.6;
+    font-variant-numeric: tabular-nums;
+    pointer-events: auto;
+  }
+
+  #coords { min-width: 190px; }
+  #coords span { opacity: .55; margin-right: 4px; }
+
+  #status-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+  }
+  #dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #888;
+    flex-shrink: 0;
+    transition: background .3s;
+  }
+  #dot.ok   { background: #34d058; }
+  #dot.err  { background: #f85149; }
+  #status-text { opacity: .7; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── Panel bottom-right ── */
+  #panel {
+    position: absolute;
+    bottom: 24px;
+    right: 20px;
+    z-index: 500;
+    width: 180px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .card {
+    background: rgba(0,0,0,.65);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,.1);
+    border-radius: 14px;
+    padding: 10px 12px;
+  }
+
+  .card-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    opacity: .45;
+    margin-bottom: 7px;
+  }
+
+  /* Speed buttons */
+  #speed-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+  }
+  .spd {
+    background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 8px;
+    color: #ccc;
+    font-size: 11px;
+    padding: 5px 0;
+    cursor: pointer;
+    text-align: center;
+    transition: background .15s, color .15s;
+  }
+  .spd.active {
+    background: #0A84FF;
+    border-color: #0A84FF;
+    color: #fff;
+  }
+
+  /* Action buttons */
+  .btn {
+    width: 100%;
+    border: none;
+    border-radius: 10px;
+    padding: 9px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity .15s;
+  }
+  .btn:active { opacity: .7; }
+  .btn-blue   { background: #0A84FF; color: #fff; }
+  .btn-red    { background: #FF3B30; color: #fff; }
+  .btn-gray   { background: rgba(255,255,255,.12); color: #ccc; }
+
+  /* Progress bar */
+  #progress-wrap {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #progress-wrap.visible { display: flex; }
+  #progress-track {
+    height: 4px;
+    background: rgba(255,255,255,.12);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  #progress-fill {
+    height: 100%;
+    background: #34d058;
+    border-radius: 2px;
+    width: 0%;
+    transition: width .3s linear;
+  }
+  #progress-pct {
+    font-size: 11px;
+    opacity: .5;
+    text-align: right;
+  }
+
+  /* ── Joystick bottom-left ── */
+  #joystick-wrap {
+    position: absolute;
+    bottom: 24px;
+    left: 20px;
+    z-index: 500;
+    touch-action: none;
+    user-select: none;
+  }
+
+  #joystick-base {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: rgba(0,0,0,.55);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,.15);
+    position: relative;
+  }
+  /* crosshair */
+  #joystick-base::before,
+  #joystick-base::after {
+    content: '';
+    position: absolute;
+    background: rgba(255,255,255,.1);
+    border-radius: 1px;
+  }
+  #joystick-base::before { width: 100%; height: 1px; top: 50%; left: 0; transform: translateY(-50%); }
+  #joystick-base::after  { width: 1px; height: 100%; left: 50%; top: 0; transform: translateX(-50%); }
+
+  #joystick-knob {
+    position: absolute;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 38% 38%, #3a8fff, #0A84FF);
+    box-shadow: 0 3px 12px rgba(10,132,255,.5);
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    transition: box-shadow .15s;
+    pointer-events: none;
+  }
+  #joystick-knob.active {
+    box-shadow: 0 3px 20px rgba(10,132,255,.8);
+  }
+</style>
+</head>
+<body>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="pill" id="status-pill">
+    <div id="dot"></div>
+    <span id="status-text">連接中…</span>
+  </div>
+  <div class="pill" id="coords">
+    <div><span>緯</span><span id="lat-val">—</span></div>
+    <div><span>經</span><span id="lon-val">—</span></div>
+  </div>
+</div>
+
+<!-- Map -->
+<div id="map"></div>
+
+<!-- Control Panel -->
+<div id="panel">
+
+  <div class="card">
+    <div class="card-label">速度</div>
+    <div id="speed-row">
+      <div class="spd" data-spd="1">1</div>
+      <div class="spd active" data-spd="5">5</div>
+      <div class="spd" data-spd="20">20</div>
+      <div class="spd" data-spd="50">50</div>
+    </div>
+    <div style="font-size:10px;opacity:.35;margin-top:5px;text-align:right">m/s</div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">路線播放</div>
+    <input type="file" id="gpx-input" accept=".gpx" style="display:none">
+    <button class="btn btn-blue" id="btn-play" onclick="document.getElementById('gpx-input').click()">
+      選擇 GPX 播放
+    </button>
+    <button class="btn btn-red" id="btn-stop" style="display:none;margin-top:6px" onclick="stopRoute()">
+      停止
+    </button>
+    <div id="progress-wrap" style="margin-top:8px">
+      <div id="progress-track"><div id="progress-fill"></div></div>
+      <div id="progress-pct">0%</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <button class="btn btn-gray" onclick="clearGPS()">清除假 GPS</button>
+  </div>
+
+</div>
+
+<!-- Joystick -->
+<div id="joystick-wrap">
+  <div id="joystick-base">
+    <div id="joystick-knob"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ── Map ────────────────────────────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: false }).setView([25.0330, 121.5654], 14);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap',
+  maxZoom: 19,
+}).addTo(map);
+L.control.zoom({ position: 'topright' }).addTo(map);
+
+// Custom red marker
+const pinIcon = L.divIcon({
+  className: '',
+  html: `<svg width="32" height="40" viewBox="0 0 32 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <ellipse cx="16" cy="37" rx="6" ry="3" fill="rgba(0,0,0,.25)"/>
+    <path d="M16 0C9.373 0 4 5.373 4 12c0 9 12 26 12 26S28 21 28 12C28 5.373 22.627 0 16 0z" fill="#FF3B30"/>
+    <circle cx="16" cy="12" r="5" fill="white" opacity=".9"/>
+  </svg>`,
+  iconSize: [32, 40],
+  iconAnchor: [16, 40],
+});
+
+let marker = null;
+
+function setMarker(lat, lon) {
+  if (marker) {
+    marker.setLatLng([lat, lon]);
+  } else {
+    marker = L.marker([lat, lon], { icon: pinIcon, draggable: true }).addTo(map);
+    marker.on('dragend', () => {
+      const { lat, lng } = marker.getLatLng();
+      apiSet(lat, lng);
+    });
+  }
+}
+
+// Click map to set location
+map.on('click', e => {
+  if (joystick.active) return;
+  setMarker(e.latlng.lat, e.latlng.lng);
+  apiSet(e.latlng.lat, e.latlng.lng);
+  map.setView(e.latlng, map.getZoom());
+});
+
+// ── Speed ──────────────────────────────────────────────────────────────────────
+let currentSpeed = 5;
+
+document.querySelectorAll('.spd').forEach(btn => {
+  btn.addEventListener('click', () => {
+    currentSpeed = parseFloat(btn.dataset.spd);
+    document.querySelectorAll('.spd').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    fetch('/api/speed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speed: currentSpeed }),
+    });
+  });
+});
+
+// ── API helpers ────────────────────────────────────────────────────────────────
+function apiSet(lat, lon) {
+  fetch('/api/set', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat, lon }),
+  });
+}
+
+function clearGPS() {
+  fetch('/api/clear', { method: 'POST' });
+}
+
+function stopRoute() {
+  fetch('/api/stop', { method: 'POST' });
+}
+
+// ── GPX upload ─────────────────────────────────────────────────────────────────
+document.getElementById('gpx-input').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch('/api/play', { method: 'POST', body: fd });
+  const data = await res.json();
+  if (!res.ok) {
+    setStatus('err', data.detail || '播放失敗');
+  } else {
+    setStatus('ok', `播放中 (${data.points} 個點)`);
+  }
+  e.target.value = '';
+});
+
+// ── WebSocket (receive state updates) ─────────────────────────────────────────
+let ws, wsRetry = 0;
+
+function connectWS() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { wsRetry = 0; setStatus('ok', '已連線'); };
+  ws.onclose = () => {
+    setStatus('err', '重新連線中…');
+    setTimeout(connectWS, Math.min(500 * ++wsRetry, 5000));
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = e => handleState(JSON.parse(e.data));
+}
+
+connectWS();
+
+function handleState(s) {
+  // coordinates
+  if (s.lat != null && s.lon != null) {
+    document.getElementById('lat-val').textContent = s.lat.toFixed(6) + '°';
+    document.getElementById('lon-val').textContent = s.lon.toFixed(6) + '°';
+    // Only update marker during route playback (joystick updates it locally)
+    if (s.playing) setMarker(s.lat, s.lon);
+  }
+
+  // playing state
+  const btnPlay = document.getElementById('btn-play');
+  const btnStop = document.getElementById('btn-stop');
+  const progressWrap = document.getElementById('progress-wrap');
+  if (s.playing) {
+    btnPlay.style.display = 'none';
+    btnStop.style.display = 'block';
+    progressWrap.classList.add('visible');
+    document.getElementById('progress-fill').style.width = (s.progress * 100).toFixed(1) + '%';
+    document.getElementById('progress-pct').textContent = (s.progress * 100).toFixed(0) + '%';
+    if (s.lat != null) {
+      map.setView([s.lat, s.lon], map.getZoom(), { animate: true, duration: 0.25 });
+    }
+  } else {
+    btnPlay.style.display = 'block';
+    btnStop.style.display = 'none';
+    progressWrap.classList.remove('visible');
+  }
+
+  // error / status
+  if (s.error) {
+    setStatus('err', s.error);
+  }
+}
+
+function setStatus(type, msg) {
+  const dot = document.getElementById('dot');
+  const txt = document.getElementById('status-text');
+  dot.className = type === 'ok' ? 'ok' : type === 'err' ? 'err' : '';
+  txt.textContent = msg;
+}
+
+// ── Joystick ───────────────────────────────────────────────────────────────────
+const joystick = {
+  radius: 38,          // max knob displacement
+  active: false,
+  vx: 0, vy: 0,        // normalized direction [-1, 1]
+  cx: 0, cy: 0,        // center of base in page coords
+
+  base: document.getElementById('joystick-base'),
+  knob: document.getElementById('joystick-knob'),
+  pointerId: null,
+
+  init() {
+    this.base.addEventListener('pointerdown', e => this.down(e));
+    window.addEventListener('pointermove', e => this.move(e));
+    window.addEventListener('pointerup',   e => this.up(e));
+    window.addEventListener('pointercancel', e => this.up(e));
+  },
+
+  _center() {
+    const r = this.base.getBoundingClientRect();
+    this.cx = r.left + r.width  / 2;
+    this.cy = r.top  + r.height / 2;
+  },
+
+  down(e) {
+    e.preventDefault();
+    this.pointerId = e.pointerId;
+    this.active = true;
+    this.knob.classList.add('active');
+    this._center();
+    this.move(e);
+  },
+
+  move(e) {
+    if (!this.active || e.pointerId !== this.pointerId) return;
+    e.preventDefault();
+    const dx = e.clientX - this.cx;
+    const dy = e.clientY - this.cy;
+    const dist = Math.hypot(dx, dy);
+    const clamped = Math.min(dist, this.radius);
+    const nx = dist > 0 ? dx / dist : 0;
+    const ny = dist > 0 ? dy / dist : 0;
+
+    this.vx = nx * (clamped / this.radius);
+    this.vy = ny * (clamped / this.radius);
+
+    this.knob.style.transform =
+      `translate(calc(-50% + ${nx * clamped}px), calc(-50% + ${ny * clamped}px))`;
+  },
+
+  up(e) {
+    if (e.pointerId !== this.pointerId) return;
+    this.active = false;
+    this.pointerId = null;
+    this.vx = this.vy = 0;
+    this.knob.classList.remove('active');
+    this.knob.style.transform = 'translate(-50%, -50%)';
+    this.knob.style.transition = 'transform .2s cubic-bezier(.34,1.56,.64,1)';
+    setTimeout(() => { this.knob.style.transition = ''; }, 250);
+  },
+};
+
+joystick.init();
+
+// Joystick movement loop (100ms tick)
+setInterval(() => {
+  if (!joystick.active || (joystick.vx === 0 && joystick.vy === 0)) return;
+  if (!marker) return;
+
+  const { lat, lng } = marker.getLatLng();
+  const dist = currentSpeed * 0.1;  // m per tick (speed × 0.1s)
+  const newLat = lat + ((-joystick.vy) * dist / 111_000);
+  const newLon = lng + (joystick.vx * dist / (111_000 * Math.cos(lat * Math.PI / 180)));
+
+  marker.setLatLng([newLat, newLon]);
+  map.setView([newLat, newLon], map.getZoom(), { animate: false });
+
+  // Send to server (debounced by location_worker on backend)
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'move', lat: newLat, lon: newLon }));
+  }
+
+  // Update HUD immediately
+  document.getElementById('lat-val').textContent = newLat.toFixed(6) + '°';
+  document.getElementById('lon-val').textContent = newLon.toFixed(6) + '°';
+}, 100);
+
+// ── Keyboard (arrow keys) ──────────────────────────────────────────────────────
+const keysDown = new Set();
+
+document.addEventListener('keydown', e => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+    e.preventDefault();
+    keysDown.add(e.key);
+  }
+});
+document.addEventListener('keyup', e => keysDown.delete(e.key));
+
+setInterval(() => {
+  if (!keysDown.size || !marker) return;
+  const { lat, lng } = marker.getLatLng();
+  const dist = currentSpeed * 0.1;
+  let dlat = 0, dlon = 0;
+  if (keysDown.has('ArrowUp'))    dlat += dist / 111_000;
+  if (keysDown.has('ArrowDown'))  dlat -= dist / 111_000;
+  if (keysDown.has('ArrowRight')) dlon += dist / (111_000 * Math.cos(lat * Math.PI / 180));
+  if (keysDown.has('ArrowLeft'))  dlon -= dist / (111_000 * Math.cos(lat * Math.PI / 180));
+
+  const newLat = lat + dlat;
+  const newLon = lng + dlon;
+  marker.setLatLng([newLat, newLon]);
+  map.setView([newLat, newLon], map.getZoom(), { animate: false });
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'move', lat: newLat, lon: newLon }));
+  }
+  document.getElementById('lat-val').textContent = newLat.toFixed(6) + '°';
+  document.getElementById('lon-val').textContent = newLon.toFixed(6) + '°';
+}, 100);
+</script>
+</body>
+</html>
