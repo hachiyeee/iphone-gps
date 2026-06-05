@@ -1,4 +1,4 @@
-# 修改手機 GPS - 使用方式
+# 修改手機 GPS - 使用方式 
 
 ## 連接 USB
 * terminal 開啟網頁地圖（假設資料夾存在 Desktop）：
@@ -30,3 +30,5 @@ sudo ~/Desktop/iphone-gps/.venv/bin/python -m pymobiledevice3 remote tunneld
 * 可以拔掉 USB 了，此時可無線連接，從地圖上選擇地點改 GPS。
 
 *p.s. 網頁切斷後，iPhone 的配對似乎會被忘記，需要重新配對才能無線連接。*
+
+<img src="yellow_pikmin.gif" alt="description" width="400">
