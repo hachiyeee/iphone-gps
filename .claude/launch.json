@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "iphone-gps",
+      "runtimeExecutable": "/Users/yvonneh/Desktop/iphone-gps/.venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8080"],
+      "cwd": "/Users/yvonneh/Desktop/iphone-gps",
+      "port": 8080
+    }
+  ]
+}

@@ -291,4 +291,4 @@ async def ws_endpoint(ws: WebSocket):
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8080, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=9876, reload=True)
